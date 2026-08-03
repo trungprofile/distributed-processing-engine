@@ -1,0 +1,85 @@
+name: dpe
+
+services:
+  redis:
+    image: redis:7-alpine
+    # appendonly keeps the stream durable across a Redis restart; the engine's
+    # guarantees assume the broker does not lose acknowledged entries.
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 2gb
+      --maxmemory-policy noeviction
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    entrypoint: ["/usr/local/bin/coordinator"]
+    command: ["-listen=:9090", "-redis=redis:6379", "-metrics-addr=:9101"]
+    environment:
+      REDIS_ADDR: redis:6379
+    ports:
+      - "9090:9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # No -node flag: the container hostname is unique per replica and becomes
+    # the consumer name in the group.
+    command:
+      - "-redis=redis:6379"
+      - "-concurrency=64"
+      - "-batch=128"
+      - "-min-idle=5s"
+      - "-drain-timeout=30s"
+    environment:
+      REDIS_ADDR: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 8
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    # Give the drain the same budget as -drain-timeout so `docker compose stop`
+    # exercises the graceful path instead of SIGKILLing mid-flight work.
+    stop_grace_period: 35s
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=6h"
+    ports:
+      - "9091:9090"
+    depends_on:
+      - worker
+
+  # Load generator. Not started by `up`; `make bench` runs it on demand.
+  producer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    entrypoint: ["/usr/local/bin/producer"]
+    command: ["-redis=redis:6379", "-rate=10000", "-duration=60s", "-size=256"]
+    profiles: ["bench"]
+    depends_on:
+      redis:
+        condition: service_healthy

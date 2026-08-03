@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Compose replicas share one DNS name; an A-record lookup returns every
+  # worker IP, so scaling the service up is picked up without editing this file.
+  - job_name: dpe-workers
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9100
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  - job_name: dpe-coordinator
+    static_configs:
+      - targets: ["coordinator:9101"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
