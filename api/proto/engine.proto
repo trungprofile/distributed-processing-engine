@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package engine.v1;
+
+option go_package = "github.com/trungprofile/distributed-processing-engine/api/proto;enginepb";
+
+// Engine is the cluster control plane. Data flows through Redis Streams; this
+// service exists for submission, observation and lifecycle control only.
+service Engine {
+  // SubmitBatch appends records to the stream. The caller-supplied key is the
+  // idempotency key, so re-submitting a batch after a timeout is safe.
+  rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+
+  // GetClusterStats reports per-node progress plus consumer-group depth.
+  rpc GetClusterStats(GetClusterStatsRequest) returns (ClusterStats);
+
+  // DrainNode asks one node (or all, with node_id "*") to stop reading, finish
+  // in-flight work, and ack it before exiting.
+  rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse);
+}
+
+message Record {
+  // Idempotency key. Two records with the same key are the same record.
+  string key = 1;
+  bytes payload = 2;
+}
+
+message SubmitBatchRequest {
+  repeated Record records = 1;
+}
+
+message SubmitBatchResponse {
+  int64 accepted = 1;
+  // Stream the records were appended to.
+  string stream = 2;
+}
+
+message GetClusterStatsRequest {}
+
+message NodeStats {
+  string node_id = 1;
+  int32 capacity = 2;
+  int64 in_flight = 3;
+  int64 processed = 4;
+  int64 reclaimed = 5;
+  bool draining = 6;
+  int64 last_heartbeat_unix = 7;
+}
+
+message ClusterStats {
+  repeated NodeStats nodes = 1;
+  // Entries never delivered to any consumer.
+  int64 stream_lag = 2;
+  // Entries delivered but not yet acked, i.e. in flight cluster-wide.
+  int64 pending = 3;
+  int64 stream_length = 4;
+}
+
+message DrainNodeRequest {
+  string node_id = 1;
+}
+
+message DrainNodeResponse {
+  bool requested = 1;
+}
