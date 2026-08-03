@@ -296,11 +296,41 @@ func (n *Node) readLoop(ctx context.Context) error {
 			}
 			continue
 		}
-		if _, err := n.pool.SubmitBatch(ctx, records); err != nil {
+		sent, err := n.pool.SubmitBatch(ctx, records)
+		if err != nil {
+			// These entries are already checked out into this node's pending
+			// list, so dropping them here would strand them until a peer's
+			// reclaim sweep. Hand the remainder to the pool on a
+			// shutdown-proof context instead: the drain that follows will
+			// finish and ack them.
+			n.flush(records[sent:])
 			if errors.Is(err, ErrDraining) || ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return err
+		}
+	}
+}
+
+// flush submits records this node already owns, ignoring shutdown
+// cancellation but not the drain budget. Anything that still cannot be
+// accepted is left pending for the reclaimer.
+func (n *Node) flush(records []stream.Record) {
+	if len(records) == 0 {
+		return
+	}
+	select {
+	case <-n.killed:
+		return // a killed node finishes nothing; the reclaimer owns this work
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.DrainTimeout)
+	defer cancel()
+	for i, r := range records {
+		if err := n.pool.Submit(ctx, r); err != nil {
+			n.log.Warn("leaving entries pending for reclaim",
+				"count", len(records)-i, "error", err)
+			return
 		}
 	}
 }
@@ -310,9 +340,12 @@ func (n *Node) reclaimLoop(ctx context.Context) error {
 	return n.reclaim.Run(ctx, func(ctx context.Context, batch []stream.Record) error {
 		n.reclaimed.Add(int64(len(batch)))
 		n.log.Info("reclaimed messages from expired leases", "count", len(batch))
-		_, err := n.pool.SubmitBatch(ctx, batch)
-		if errors.Is(err, ErrDraining) {
-			return nil
+		sent, err := n.pool.SubmitBatch(ctx, batch)
+		if err != nil {
+			n.flush(batch[sent:])
+			if errors.Is(err, ErrDraining) {
+				return nil
+			}
 		}
 		return err
 	})

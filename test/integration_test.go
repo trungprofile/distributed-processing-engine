@@ -58,8 +58,14 @@ func TestNodeFailureLosesNoRecords(t *testing.T) {
 		nodeCtx, cancel := context.WithCancel(context.Background())
 		ctxs[i] = cancel
 		clients[i] = dialRedis(t)
-		nodes[i] = newNode(t, clients[i], ns, fmt.Sprintf("node-%d", i),
-			store.NewRedisSink(clients[i], sinkKey))
+		var sink store.Sink = store.NewRedisSink(clients[i], sinkKey)
+		if i == 0 {
+			// node-0 is the victim. A slow sink guarantees it is holding
+			// uncommitted records at the moment it dies, which is the case
+			// the exactly-once path has to survive.
+			sink = slowSink{inner: sink, delay: 300 * time.Millisecond}
+		}
+		nodes[i] = newNode(t, clients[i], ns, fmt.Sprintf("node-%d", i), sink)
 		go func(n *worker.Node, ctx context.Context) { _ = n.Run(ctx) }(nodes[i], nodeCtx)
 	}
 	t.Cleanup(func() {
@@ -98,9 +104,9 @@ func TestNodeFailureLosesNoRecords(t *testing.T) {
 	// pending entries list with no consumer left to ack it.
 	inFlightAtKill := nodes[0].Processed()
 	killedAt := time.Now()
+	_ = clients[0].Close() // sever its connections first, as a dead process would
 	nodes[0].Kill()        // no drain: abandon whatever it holds
 	ctxs[0]()              // stop its loops
-	_ = clients[0].Close() // sever its connections, as a dead process would
 
 	t.Logf("killed node-0 (had committed %d records); sink held %d of %d",
 		inFlightAtKill, count(t, sink), totalRecords)
@@ -199,6 +205,22 @@ func TestDrainCommitsInFlightWork(t *testing.T) {
 	if st.Pending != 0 {
 		t.Errorf("drained node left %d entries pending; drain must ack everything it owns", st.Pending)
 	}
+}
+
+// slowSink stretches the window in which a record is claimed but not yet
+// committed, so a kill lands squarely inside it.
+type slowSink struct {
+	inner store.Sink
+	delay time.Duration
+}
+
+func (s slowSink) Write(ctx context.Context, r stream.Record) error {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.inner.Write(ctx, r)
 }
 
 func newNode(t *testing.T, rdb redis.UniversalClient, ns, id string, sink store.Sink) *worker.Node {
