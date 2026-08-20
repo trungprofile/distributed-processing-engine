@@ -1,0 +1,32 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed as "{{ .Release.Name }}" in namespace {{ .Release.Namespace }}.
+
+Installed:
+  operator      {{ include "dpe.fullname" . }}-operator
+{{- if .Values.coordinator.enabled }}
+  coordinator   {{ include "dpe.coordinatorName" . }} (gRPC :{{ .Values.coordinator.grpcPort }})
+{{- end }}
+{{- if .Values.redis.enabled }}
+  redis         {{ include "dpe.redisName" . }} (:{{ .Values.redis.port }})
+{{- else }}
+  redis         external at {{ .Values.redis.externalAddr }}
+{{- end }}
+
+Run a job:
+
+  kubectl apply -n {{ .Release.Namespace }} -f examples/processingjob.yaml
+  kubectl get processingjobs -n {{ .Release.Namespace }} -w
+
+The REPLICAS, READY, LAG and PENDING columns come from the job's status
+subresource, which the operator refreshes every 5 seconds from the
+coordinator's GetClusterStats.
+
+Submit work through the control plane (requires grpcurl):
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "dpe.coordinatorName" . }} {{ .Values.coordinator.grpcPort }}:{{ .Values.coordinator.grpcPort }} &
+  grpcurl -plaintext localhost:{{ .Values.coordinator.grpcPort }} engine.v1.Engine/GetClusterStats
+
+Workers scale on consumer-group lag: desired replicas is
+ceil(streamLag / autoscale.targetLagPerWorker), clamped to
+[minReplicas, maxReplicas]. Scaling out is immediate; scaling in waits for the
+stabilization window and then drains the highest-ordinal worker before its pod
+is removed.

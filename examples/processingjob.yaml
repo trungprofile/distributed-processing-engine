@@ -1,0 +1,48 @@
+# A ProcessingJob for the stack the Helm chart installs with default values.
+#
+#   helm install dpe deploy/helm/dpe --namespace dpe-system --create-namespace
+#   kubectl apply -n dpe-system -f examples/processingjob.yaml
+#   kubectl get processingjobs -n dpe-system -w
+apiVersion: dpe.trungprofile.dev/v1alpha1
+kind: ProcessingJob
+metadata:
+  name: records
+spec:
+  # Must match the coordinator's -stream and -group, or its GetClusterStats
+  # will report on a different consumer group than the workers are reading.
+  stream: "dpe:records"
+  group: "dpe-workers"
+  # Service name from the chart's default release name "dpe".
+  redisAddr: "dpe-redis:6379"
+  image: "dpe:0.1.0"
+  # Bounded in-flight window per worker. This is the backpressure threshold:
+  # a saturated worker stops reading rather than queuing.
+  concurrency: 64
+  # Lease length. An entry idle longer than this may be reclaimed by a peer,
+  # so it also bounds recovery time after a lost pod.
+  minIdle: 3s
+  # Budget for finishing in-flight records on SIGTERM. The operator sets the
+  # pod's termination grace period to this plus five seconds.
+  drainTimeout: 30s
+
+  autoscale:
+    minReplicas: 1
+    maxReplicas: 16
+    # Backlog entries one worker is expected to absorb. Desired replicas is
+    # ceil(streamLag / targetLagPerWorker).
+    targetLagPerWorker: 500
+    # Scale-in is damped: a lower desired count must hold continuously for
+    # this long before a worker is drained. Scale-out is immediate.
+    stabilizationWindow: 60s
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  placement:
+    # Spread keeps workers off the same node so losing one node costs a
+    # bounded fraction of the group.
+    policy: Spread

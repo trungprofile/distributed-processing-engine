@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dpe.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dpe.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dpe.selectorLabels" (dict "root" . "component" "operator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dpe.selectorLabels" (dict "root" . "component" "operator") | nindent 8 }}
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "dpe.operatorServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The image's ENTRYPOINT is the worker; the operator overrides it.
+      containers:
+        - name: operator
+          image: {{ include "dpe.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/operator"]
+          args:
+            - "-metrics-addr=:{{ .Values.operator.metricsPort }}"
+            - "-health-probe-addr=:{{ .Values.operator.probePort }}"
+            - "-leader-elect={{ .Values.operator.leaderElection }}"
+            - "-zap-log-level={{ .Values.operator.logLevel }}"
+          env:
+            - name: WATCH_NAMESPACE
+              value: {{ .Values.operator.watchNamespace | quote }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.operator.metricsPort }}
+            - name: probes
+              containerPort: {{ .Values.operator.probePort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      securityContext:
+        runAsNonRoot: true
+      # Losing the leader lease on shutdown is what makes a rolling update hand
+      # over promptly rather than waiting out the lease duration.
+      terminationGracePeriodSeconds: 20
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

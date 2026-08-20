@@ -1,0 +1,113 @@
+{{- if .Values.redis.enabled }}
+# A single Redis instance holding the stream, the idempotency keys and the node
+# registry. One stateful dependency is the whole point of the design, so this
+# is a StatefulSet with one replica rather than a cluster.
+#
+# The flags mirror deploy/docker-compose.yml. noeviction is load-bearing: with
+# an eviction policy Redis could drop a stream entry under memory pressure,
+# which would silently lose a record the cluster still believes it owns.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "dpe.redisName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dpe.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  serviceName: {{ include "dpe.redisName" . }}
+  selector:
+    matchLabels:
+      {{- include "dpe.selectorLabels" (dict "root" . "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dpe.selectorLabels" (dict "root" . "component" "redis") | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "redis-server"
+            - "--appendonly"
+            - {{ .Values.redis.appendonly | quote }}
+            - "--appendfsync"
+            - {{ .Values.redis.appendfsync | quote }}
+            - "--maxmemory"
+            - {{ .Values.redis.maxmemory | quote }}
+            - "--maxmemory-policy"
+            - {{ .Values.redis.maxmemoryPolicy | quote }}
+            - "--dir"
+            - "/data"
+          ports:
+            - name: redis
+              containerPort: {{ .Values.redis.port }}
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+      {{- if not .Values.redis.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.redis.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.redis.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dpe.redisName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dpe.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  selector:
+    {{- include "dpe.selectorLabels" (dict "root" . "component" "redis") | nindent 4 }}
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+      targetPort: redis
+      protocol: TCP
+{{- end }}

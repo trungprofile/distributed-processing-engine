@@ -1,0 +1,20 @@
+apiVersion: v2
+name: dpe
+description: The distributed processing engine operator, its gRPC control plane and an optional Redis
+type: application
+# Chart version tracks the chart; appVersion tracks the engine image it
+# defaults to. They move independently — a values-only change bumps only the
+# former.
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - redis-streams
+  - stream-processing
+  - operator
+  - exactly-once
+home: https://github.com/trungprofile/distributed-processing-engine
+sources:
+  - https://github.com/trungprofile/distributed-processing-engine
+maintainers:
+  - name: Trung Nguyen
+    url: https://github.com/trungprofile

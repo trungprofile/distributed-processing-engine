@@ -1,0 +1,53 @@
+# A ProcessingJob whose workers each hold a GPU, placed by the bin-packing
+# scheduler profile in deploy/scheduler.
+#
+# Two things are happening, and they are independent:
+#
+#   1. `resources` is passed through to the worker container verbatim. The
+#      operator does not interpret nvidia.com/gpu — the scheduler filters on
+#      it and the node's device plugin satisfies it.
+#   2. `placement.schedulerName` routes these pods to a scheduler running the
+#      MostAllocated profile, so they pack onto as few GPU nodes as possible
+#      instead of spreading over all of them. That profile must be installed
+#      first; see deploy/scheduler/binpack-profile.yaml.
+#
+# Without step 2 the default scheduler still schedules these pods, it just
+# spreads them — `policy: BinPack` alone changes nothing about scoring.
+apiVersion: dpe.trungprofile.dev/v1alpha1
+kind: ProcessingJob
+metadata:
+  name: gpu-inference
+spec:
+  stream: "dpe:gpu-records"
+  group: "dpe-gpu-workers"
+  redisAddr: "dpe-redis:6379"
+  image: "dpe:0.1.0"
+  # One in-flight record per worker: a GPU handler is not a candidate for a
+  # wide in-flight window, and the pool bound is what keeps the device from
+  # being oversubscribed.
+  concurrency: 1
+  # GPU handlers run long, so the lease is long: reclaiming a record from a
+  # worker that is still processing it wastes a whole GPU-second of work.
+  minIdle: 60s
+  drainTimeout: 120s
+
+  autoscale:
+    minReplicas: 0
+    maxReplicas: 8
+    # One worker per 50 backlog entries, because each entry is expensive.
+    targetLagPerWorker: 50
+    # Long window: releasing a GPU node and reacquiring it is expensive, so
+    # scale-in should be reluctant.
+    stabilizationWindow: 300s
+
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+    requests:
+      cpu: "4"
+      memory: 16Gi
+
+  placement:
+    policy: BinPack
+    schedulerName: dpe-binpack

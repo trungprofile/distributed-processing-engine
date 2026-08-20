@@ -1,0 +1,120 @@
+# Values for the dpe chart. Every field is commented; the defaults install a
+# self-contained stack (operator + coordinator + Redis) suitable for kind.
+
+# Image used by the operator and the coordinator. The repository Dockerfile
+# builds all four binaries into one image and selects between them with
+# `command`, so there is a single tag to manage.
+image:
+  repository: dpe
+  tag: "0.1.0"
+  # IfNotPresent lets a locally built, kind-loaded image win over a registry
+  # pull, which is what `make kind-up` relies on.
+  pullPolicy: IfNotPresent
+# Secrets for pulling the image, when it lives in a private registry.
+imagePullSecrets: []
+
+# Override the generated resource-name prefix. Empty uses the release name.
+nameOverride: ""
+fullnameOverride: ""
+
+operator:
+  # Replicas of the controller. More than one is a warm standby, not extra
+  # throughput: leader election means exactly one reconciles at a time.
+  replicas: 1
+  # Leader election guards the invariant the operator exists to protect —
+  # only one writer may pick a scale-in victim and drain it. Turn it off only
+  # for a single-replica development install.
+  leaderElection: true
+  # Log verbosity: debug, info or error.
+  logLevel: info
+  # Namespace the operator watches. Empty watches every namespace, which needs
+  # the ClusterRole below; setting one narrows the cache and the RBAC.
+  watchNamespace: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Ports for controller-runtime's metrics server and health probes.
+  metricsPort: 8080
+  probePort: 8081
+  # Emit a Prometheus PodMonitor-style scrape annotation on the operator pod.
+  podAnnotations: {}
+
+coordinator:
+  # The gRPC control plane: SubmitBatch, GetClusterStats, DrainNode. It holds
+  # no record state, so a restart never affects in-flight work.
+  enabled: true
+  replicas: 1
+  grpcPort: 9090
+  metricsPort: 9101
+  # Stream and consumer group the coordinator reports on. These must match the
+  # ProcessingJob's spec.stream and spec.group for its stats to be meaningful.
+  stream: "dpe:records"
+  group: "dpe-workers"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  service:
+    type: ClusterIP
+    annotations: {}
+
+redis:
+  # Install a single Redis instance for the stream, the idempotency keys and
+  # the node registry. Set false and point externalAddr at your own.
+  enabled: true
+  image: redis:7-alpine
+  # Persistence settings mirror deploy/docker-compose.yml. The engine's
+  # guarantees assume the broker does not lose acknowledged entries, and
+  # noeviction is load-bearing: evicting a stream entry under memory pressure
+  # would drop a record the cluster believes it still owns.
+  appendonly: "yes"
+  appendfsync: everysec
+  maxmemory: 2gb
+  maxmemoryPolicy: noeviction
+  port: 6379
+  persistence:
+    # A PersistentVolumeClaim for the append-only file. Disable for ephemeral
+    # test clusters that have no default StorageClass.
+    enabled: true
+    size: 8Gi
+    # Empty uses the cluster's default StorageClass.
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 2560Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Used when redis.enabled is false: host:port of an existing instance.
+  externalAddr: ""
+
+serviceAccount:
+  # Create ServiceAccounts for the operator and the coordinator.
+  create: true
+  annotations: {}
+  # Override the operator's ServiceAccount name. Empty derives it from the
+  # release name.
+  name: ""
+
+rbac:
+  # Create the Role/ClusterRole and binding the operator needs. Disable to
+  # bind an externally managed role instead.
+  create: true
+
+# Common labels and annotations added to every rendered object.
+commonLabels: {}
+commonAnnotations: {}

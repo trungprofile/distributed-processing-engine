@@ -1,0 +1,110 @@
+{{- if .Values.coordinator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dpe.coordinatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dpe.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.coordinator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dpe.selectorLabels" (dict "root" . "component" "coordinator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dpe.selectorLabels" (dict "root" . "component" "coordinator") | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.coordinator.metricsPort | quote }}
+        prometheus.io/path: /metrics
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: coordinator
+          image: {{ include "dpe.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/coordinator"]
+          args:
+            - "-listen=:{{ .Values.coordinator.grpcPort }}"
+            - "-redis={{ include "dpe.redisAddr" . }}"
+            - "-stream={{ .Values.coordinator.stream }}"
+            - "-group={{ .Values.coordinator.group }}"
+            - "-metrics-addr=:{{ .Values.coordinator.metricsPort }}"
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.coordinator.grpcPort }}
+            - name: metrics
+              containerPort: {{ .Values.coordinator.metricsPort }}
+          # The coordinator holds no record state, so readiness is simply
+          # "the gRPC listener is up".
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.coordinator.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      securityContext:
+        runAsNonRoot: true
+      {{- with .Values.coordinator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# The operator resolves an unset spec.coordinatorAddr to
+# dpe-coordinator.<namespace>.svc:9090, so a release named "dpe" needs no
+# explicit address on the ProcessingJob.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dpe.coordinatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dpe.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+  {{- with .Values.coordinator.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.coordinator.service.type }}
+  selector:
+    {{- include "dpe.selectorLabels" (dict "root" . "component" "coordinator") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.coordinator.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.coordinator.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

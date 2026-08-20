@@ -1,0 +1,354 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: processingjobs.dpe.trungprofile.dev
+spec:
+  group: dpe.trungprofile.dev
+  names:
+    categories:
+    - dpe
+    kind: ProcessingJob
+    listKind: ProcessingJobList
+    plural: processingjobs
+    shortNames:
+    - pj
+    singular: processingjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.streamLag
+      name: Lag
+      type: integer
+    - jsonPath: .status.pending
+      name: Pending
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ProcessingJob is one consumer group of the distributed processing engine,
+          managed as a StatefulSet of workers whose replica count follows stream lag.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProcessingJobSpec is the desired state of one consumer group.
+            properties:
+              autoscale:
+                description: Autoscale drives replica count from stream lag.
+                properties:
+                  maxReplicas:
+                    default: 16
+                    description: |-
+                      MaxReplicas is the ceiling. It exists to bound Redis connection count
+                      and cluster cost, not because the engine has a scaling limit.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    default: 1
+                    description: |-
+                      MinReplicas is the floor the operator will not scale below, so a job
+                      keeps a consumer in the group even at zero backlog.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  stabilizationWindow:
+                    default: 60s
+                    description: |-
+                      StabilizationWindow is how long a lower desired replica count must hold
+                      continuously before the operator scales in. Scale-up is immediate;
+                      scale-down is damped because it costs a drain, and a backlog that
+                      oscillates around the threshold would otherwise drain a worker every
+                      reconcile.
+                    type: string
+                  targetLagPerWorker:
+                    default: 500
+                    description: |-
+                      TargetLagPerWorker is how many backlog entries one worker is expected to
+                      absorb. Desired replicas is ceil(streamLag / targetLagPerWorker), so this
+                      value sets both the aggressiveness of scale-up and the steady-state
+                      backlog the job is willing to carry.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                type: object
+              concurrency:
+                default: 64
+                description: |-
+                  Concurrency is each worker's bounded in-flight window. It is the pool
+                  size, and therefore also the backpressure threshold.
+                format: int32
+                minimum: 1
+                type: integer
+              coordinatorAddr:
+                description: |-
+                  CoordinatorAddr is the host:port of the coordinator's gRPC control
+                  plane. The operator dials GetClusterStats there for backlog and per-node
+                  progress instead of reading Redis itself. Defaults to
+                  dpe-coordinator.<namespace>.svc:9090 when empty.
+                type: string
+              drainTimeout:
+                default: 30s
+                description: |-
+                  DrainTimeout is how long a worker may spend finishing in-flight records
+                  after SIGTERM. It also sets the pod's termination grace period, with a
+                  small margin so the kubelet does not SIGKILL a drain that is still
+                  inside its own budget.
+                type: string
+              group:
+                default: dpe-workers
+                description: |-
+                  Group is the Redis consumer group name. Every worker pod joins it under
+                  its own stable pod name.
+                type: string
+              image:
+                description: |-
+                  Image is the worker image. It must contain the worker binary at
+                  /usr/local/bin/worker, which is what the repository Dockerfile builds.
+                minLength: 1
+                type: string
+              minIdle:
+                default: 3s
+                description: |-
+                  MinIdle is the lease length: how long an entry may sit unacked before
+                  another worker may reclaim it. Lower recovers faster from a lost pod;
+                  higher wastes less duplicate work on a slow-but-alive one.
+                type: string
+              placement:
+                description: Placement controls scheduling inputs for the worker pods.
+                properties:
+                  policy:
+                    default: Spread
+                    description: Policy selects spread (default) or bin-pack intent.
+                    enum:
+                    - BinPack
+                    - Spread
+                    type: string
+                  schedulerName:
+                    description: |-
+                      SchedulerName routes pods to a non-default scheduler profile. Set it to
+                      the profile shipped in deploy/scheduler when Policy is BinPack; the
+                      default scheduler's LeastAllocated scoring will otherwise spread pods
+                      regardless of Policy.
+                    type: string
+                type: object
+              redisAddr:
+                description: |-
+                  RedisAddr is the host:port of the Redis instance holding the stream, the
+                  idempotency keys and the node registry.
+                minLength: 1
+                type: string
+              resources:
+                description: |-
+                  Resources is passed through verbatim to the worker container. This is
+                  where nvidia.com/gpu limits are set; the operator does not interpret
+                  them, it only makes sure they reach the pod spec so the scheduler and
+                  the device plugin can act on them.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This is an alpha field and requires enabling the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              stream:
+                default: dpe:records
+                description: Stream is the Redis stream key workers read from.
+                type: string
+            required:
+            - image
+            - redisAddr
+            type: object
+          status:
+            description: ProcessingJobStatus is the observed state of a consumer group.
+            properties:
+              conditions:
+                description: Conditions carries Ready, Progressing and Degraded.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              draining:
+                description: |-
+                  Draining lists node IDs the operator has asked to drain and that have
+                  not yet left the registry. It is non-empty only during a scale-in.
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the spec generation this status
+                  was computed from.
+                format: int64
+                type: integer
+              pending:
+                description: |-
+                  Pending is the size of the group's pending entries list: records
+                  delivered but not yet acked, i.e. in flight cluster-wide.
+                format: int64
+                type: integer
+              processedTotal:
+                description: |-
+                  ProcessedTotal is the sum of per-node processed counters. It resets when
+                  every worker pod is replaced, so treat it as a progress signal rather
+                  than an accounting total.
+                format: int64
+                type: integer
+              readyReplicas:
+                description: ReadyReplicas is how many worker pods are ready.
+                format: int32
+                type: integer
+              reclaimedTotal:
+                description: |-
+                  ReclaimedTotal is the sum of per-node reclaim counters: records taken
+                  over from a lease that expired, i.e. work recovered from a lost pod.
+                format: int64
+                type: integer
+              replicas:
+                description: Replicas is the replica count currently requested on
+                  the StatefulSet.
+                format: int32
+                type: integer
+              streamLag:
+                description: |-
+                  StreamLag is the number of entries never delivered to any consumer, as
+                  reported by the coordinator. It is the autoscaling input.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
