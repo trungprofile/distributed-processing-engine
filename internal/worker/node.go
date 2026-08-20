@@ -238,6 +238,18 @@ func (n *Node) Drain(ctx context.Context) error {
 	if err != nil {
 		n.log.Warn("drain deadline exceeded, leaving work pending for reclaim",
 			"in_flight", n.pool.InFlight())
+	} else {
+		// Clean drain: this node acked everything it owned, so its consumer
+		// entry in the group is dead weight. Under Kubernetes a scaled-in pod
+		// never comes back under the same name, and without this the group
+		// accumulates one dead consumer per scale-in. RemoveConsumer declines
+		// if anything is still pending, so a slow ack cannot be deleted out
+		// from under the reclaimer.
+		if pending, rerr := n.consumer.RemoveConsumer(context.WithoutCancel(ctx)); rerr != nil {
+			n.log.Warn("could not remove consumer from group", "error", rerr)
+		} else if pending > 0 {
+			n.log.Warn("left consumer in group, entries still pending", "pending", pending)
+		}
 	}
 	_ = n.registry.Deregister(context.WithoutCancel(ctx), n.cfg.NodeID)
 	n.log.Info("drained", "processed", n.processed.Load(), "reclaimed", n.reclaimed.Load())

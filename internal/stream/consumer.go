@@ -170,6 +170,59 @@ func (c *Consumer) Ack(ctx context.Context, entryIDs ...string) error {
 	return nil
 }
 
+// RemoveConsumer deletes this consumer from the group after a clean drain, so
+// a cluster that has scaled in and out for a week does not accumulate hundreds
+// of dead consumers in XINFO CONSUMERS.
+//
+// It refuses to delete a consumer that still owns pending entries, and that
+// refusal is the whole reason this is not a bare XGROUP DELCONSUMER. Redis
+// drops a deleted consumer's pending entries from the PEL outright: those
+// entries are neither acked nor reclaimable afterwards, so deleting a consumer
+// mid-flight would turn a tidy-up into silent record loss. A drain that
+// finished has acked everything it owned and leaves nothing to protect; a
+// drain that timed out has not, and its entries must stay pending for the
+// reclaimer.
+//
+// It returns the number of entries that blocked the deletion — zero means the
+// consumer was removed.
+func (c *Consumer) RemoveConsumer(ctx context.Context) (int64, error) {
+	pending, err := c.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream:   c.cfg.Stream,
+		Group:    c.cfg.Group,
+		Consumer: c.cfg.Consumer,
+		Start:    "-",
+		End:      "+",
+		Count:    1,
+	}).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return 0, fmt.Errorf("xpending for %s: %w", c.cfg.Consumer, err)
+	}
+	if len(pending) > 0 {
+		// Still holding work. Leave the consumer in place; the reclaimer will
+		// move the entries on, and a later drain can clean up.
+		count, err := c.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+			Stream:   c.cfg.Stream,
+			Group:    c.cfg.Group,
+			Consumer: c.cfg.Consumer,
+			Start:    "-",
+			End:      "+",
+			Count:    c.cfg.Batch,
+		}).Result()
+		if err != nil {
+			return 1, nil
+		}
+		return int64(len(count)), nil
+	}
+
+	if err := c.rdb.XGroupDelConsumer(ctx, c.cfg.Stream, c.cfg.Group, c.cfg.Consumer).Err(); err != nil {
+		if errors.Is(err, redis.Nil) {
+			return 0, nil // group or consumer already gone
+		}
+		return 0, fmt.Errorf("xgroup delconsumer %s: %w", c.cfg.Consumer, err)
+	}
+	return 0, nil
+}
+
 // Stats is the coordinator's view of a consumer group.
 type Stats struct {
 	Lag      int64
