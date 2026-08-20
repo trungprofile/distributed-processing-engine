@@ -270,6 +270,40 @@ func TestBacklogRecoveryAbandonsAnInFlightDrain(t *testing.T) {
 	}
 }
 
+// TestVictimChangedDuringDrainRestartsTheProtocol covers the race where the
+// replica count moves under an in-flight drain. Dropping it by one then would
+// remove a pod that was never drained, so the attempt must be abandoned.
+func TestVictimChangedDuringDrainRestartsTheProtocol(t *testing.T) {
+	job := testJob()
+	engine := &fakeEngine{stats: &enginepb.ClusterStats{StreamLag: 0, Nodes: nodesFor(job, 4)}}
+	r, c := newHarness(t, job, 4, engine)
+
+	reconcileOnce(t, r, job) // drains records-worker-3
+
+	// Something else scales the StatefulSet: the victim of a scale-in is now
+	// records-worker-4, not the pod that was drained.
+	var sts appsv1.StatefulSet
+	stsKey := types.NamespacedName{Name: workloadName(job), Namespace: job.Namespace}
+	if err := c.Get(context.Background(), stsKey, &sts); err != nil {
+		t.Fatalf("get statefulset: %v", err)
+	}
+	five := int32(5)
+	sts.Spec.Replicas = &five
+	if err := c.Update(context.Background(), &sts); err != nil {
+		t.Fatalf("update statefulset: %v", err)
+	}
+	engine.stats.Nodes = nodesFor(job, 5)
+
+	reconcileOnce(t, r, job)
+
+	if got := replicasOnCluster(t, c, job); got != 5 {
+		t.Fatalf("replicas = %d; a stale drain must not remove an undrained pod", got)
+	}
+	if _, stillDraining := r.drains.current(types.NamespacedName{Name: job.Name, Namespace: job.Namespace}); stillDraining {
+		t.Fatal("stale drain attempt was not abandoned")
+	}
+}
+
 // TestCoordinatorUnreachableHoldsTheReplicaCount asserts a control plane
 // outage never moves the workload: the workers read Redis directly and are
 // unaffected, so the safe action is to report Degraded and change nothing.

@@ -70,10 +70,14 @@ type ProcessingJobReconciler struct {
 
 // Reconcile drives one ProcessingJob towards its spec.
 //
-// The loop is: read the job, converge the Service and StatefulSet template,
-// ask the coordinator what the cluster is actually doing, and write that back
-// to status. Replica count is left alone here — it is owned by the autoscaling
-// and drain paths added on top of this loop.
+// The loop is: read the job, converge the Service and the StatefulSet's pod
+// template, ask the coordinator what the cluster is actually doing, move the
+// replica count towards what that backlog calls for, and write the observed
+// state back to status.
+//
+// The order matters in one place: nothing touches the replica count before the
+// coordinator has answered. Scaling without a lag reading would be guessing,
+// and guessing downwards drains a worker that may be needed.
 func (r *ProcessingJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -227,6 +231,18 @@ func (r *ProcessingJobReconciler) finishDrain(
 	logger := log.FromContext(ctx)
 	current := replicasOf(sts)
 
+	// The drained node must still be the one a scale-in would remove. If the
+	// replica count moved underneath us — a manual edit, a lost race — then
+	// dropping it by one now would remove a *different* pod, one that was
+	// never drained. Abandon the attempt and let the next reconcile restart
+	// the protocol against the current victim.
+	if victim := victimNode(job, current); victim != attempt.node {
+		logger.Info("scale-in victim changed during the drain, restarting the protocol",
+			"drained", attempt.node, "victim_now", victim)
+		r.drains.clear(key)
+		return requeueInterval, nil
+	}
+
 	switch waitForDrain(stats, attempt.node, attempt.startedAt, spec.DrainTimeout.Duration, now) {
 	case drainPending:
 		return drainPollInterval, nil
@@ -332,6 +348,11 @@ func (r *ProcessingJobReconciler) ensureStatefulSet(
 	case apierrors.IsNotFound(err):
 		if err := r.Create(ctx, desired); err != nil {
 			if apierrors.IsAlreadyExists(err) {
+				// A stale cache read raced a create. Re-read rather than
+				// working from the empty object the failed Get left behind.
+				if err := r.Get(ctx, client.ObjectKeyFromObject(desired), &current); err != nil {
+					return nil, fmt.Errorf("re-read statefulset %s: %w", desired.Name, err)
+				}
 				return &current, nil
 			}
 			return nil, fmt.Errorf("create statefulset %s: %w", desired.Name, err)
