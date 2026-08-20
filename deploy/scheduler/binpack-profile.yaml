@@ -1,0 +1,72 @@
+# A second kube-scheduler profile that bin-packs instead of spreading.
+#
+# The default scheduler scores nodes with NodeResourcesFit's LeastAllocated
+# strategy, which prefers the emptiest node. That is the right default for
+# availability and the wrong one for GPUs: spreading eight single-GPU pods over
+# eight 4-GPU nodes leaves every node fragmented, and the next pod asking for
+# four GPUs on one node will not schedule even though the cluster has 24 free.
+#
+# MostAllocated inverts the score so the fullest node that still fits wins,
+# which keeps whole GPU nodes free. cmd/placementsim measures the difference on
+# a fixed inventory; see bench/results/placement.json.
+#
+# A ProcessingJob opts in with:
+#
+#   spec:
+#     placement:
+#       policy: BinPack
+#       schedulerName: dpe-binpack
+#
+# Installation. This file is a KubeSchedulerConfiguration, which is read by a
+# kube-scheduler process at startup — it is not an object you can kubectl apply
+# on its own.
+#
+#   * kind / kubeadm: mount it into the control-plane scheduler's static pod
+#     and pass --config=/etc/kubernetes/dpe-binpack.yaml. The profiles list
+#     below keeps "default-scheduler" alongside "dpe-binpack", so pods that do
+#     not set schedulerName keep the stock behaviour.
+#
+#   * managed clusters (EKS, GKE, AKS): the control plane is not yours to
+#     reconfigure. Run a second scheduler as a Deployment in kube-system with
+#     this file in a ConfigMap and only the "dpe-binpack" profile, plus the
+#     system:kube-scheduler ClusterRole bound to its ServiceAccount.
+#
+# The weights below are the tuning surface. Raising the GPU weight relative to
+# cpu and memory makes GPU fragmentation the dominant cost in the score, which
+# is the intent: cpu and memory are divisible and recoverable, a stranded half
+# of a GPU node is not.
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: false
+profiles:
+  # Unchanged stock behaviour for every workload that does not opt in.
+  - schedulerName: default-scheduler
+
+  - schedulerName: dpe-binpack
+    pluginConfig:
+      - name: NodeResourcesFit
+        args:
+          scoringStrategy:
+            # MostAllocated: prefer the node with the highest post-placement
+            # utilisation that still fits the pod.
+            type: MostAllocated
+            resources:
+              # GPUs dominate: an unusable fraction of a GPU node is the
+              # expensive kind of waste, and GPUs cannot be oversubscribed.
+              - name: nvidia.com/gpu
+                weight: 10
+              - name: cpu
+                weight: 1
+              - name: memory
+                weight: 1
+    plugins:
+      score:
+        enabled:
+          - name: NodeResourcesFit
+            weight: 5
+        disabled:
+          # Both of these pull scores back towards an even spread and would
+          # partly cancel MostAllocated out.
+          - name: NodeResourcesBalancedAllocation
+          - name: ImageLocality
