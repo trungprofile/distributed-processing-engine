@@ -43,6 +43,10 @@ type ProcessingJobReconciler struct {
 	// Engine reads cluster state and requests drains through the
 	// coordinator's gRPC control plane.
 	Engine EngineClient
+
+	// scaleDown damps scale-in so a backlog oscillating around the threshold
+	// does not drain a worker on every reconcile.
+	scaleDown *scaleDownTracker
 }
 
 // +kubebuilder:rbac:groups=dpe.trungprofile.dev,resources=processingjobs,verbs=get;list;watch;create;update;patch;delete
@@ -65,10 +69,14 @@ func (r *ProcessingJobReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	var job dpev1alpha1.ProcessingJob
 	if err := r.Get(ctx, req.NamespacedName, &job); err != nil {
-		// Not found means deleted. The Service and StatefulSet carry owner
-		// references back to the job, so garbage collection has already
-		// removed them; there is nothing left to do.
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// Deleted. The Service and StatefulSet carry owner references back
+			// to the job, so garbage collection has already removed them; only
+			// the in-memory scale-down timer is ours to clean up.
+			r.scaleDown.forget(req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	spec := job.Spec.Defaulted()
@@ -86,14 +94,88 @@ func (r *ProcessingJobReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if statsErr != nil {
 		// A coordinator that cannot be reached is a real degradation, but not
 		// a reason to touch the workload: the workers are reading Redis
-		// directly and are unaffected by the control plane being down.
+		// directly and are unaffected by the control plane being down. Report
+		// it and leave the replica count where it is.
 		logger.Info("coordinator unreachable, leaving replica count unchanged", "error", statsErr)
+		if err := r.updateStatus(ctx, &job, sts, nil, statsErr); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	if err := r.updateStatus(ctx, &job, sts, stats, statsErr); err != nil {
+	requeue, err := r.converge(ctx, &job, spec, sts, stats)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+
+	if err := r.updateStatus(ctx, &job, sts, stats, nil); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// converge moves the StatefulSet towards the replica count the backlog calls
+// for and returns how long to wait before looking again.
+//
+// Scaling up is a one-line patch. Scaling down is deliberately not: it is
+// damped by the stabilization window, and even once permitted it goes through
+// the drain protocol rather than deleting a pod outright.
+func (r *ProcessingJobReconciler) converge(
+	ctx context.Context,
+	job *dpev1alpha1.ProcessingJob,
+	spec dpev1alpha1.ProcessingJobSpec,
+	sts *appsv1.StatefulSet,
+	stats *enginepb.ClusterStats,
+) (time.Duration, error) {
+	logger := log.FromContext(ctx)
+
+	current := replicasOf(sts)
+	desired := desiredReplicas(spec, stats.GetStreamLag())
+	if desired == current {
+		return requeueInterval, nil
+	}
+
+	if desired > current {
+		if err := r.scaleTo(ctx, sts, desired); err != nil {
+			return 0, err
+		}
+		logger.Info("scaled up on backlog",
+			"from", current, "to", desired, "stream_lag", stats.GetStreamLag())
+		return requeueInterval, nil
+	}
+
+	key := client.ObjectKeyFromObject(job)
+	window := spec.Autoscale.StabilizationWindow.Duration
+	allowed, readyAt := r.scaleDown.allow(key, current, desired, window, time.Now())
+	if !allowed {
+		// Come back exactly when the window closes rather than polling: the
+		// backlog may well rise again before then and reset the timer.
+		wait := time.Until(readyAt)
+		if wait > requeueInterval {
+			return wait, nil
+		}
+		return requeueInterval, nil
+	}
+
+	// Scale in one replica at a time. Each step drains a worker, and doing
+	// several at once would take a large slice of the group's capacity out of
+	// service simultaneously.
+	if err := r.scaleTo(ctx, sts, current-1); err != nil {
+		return 0, err
+	}
+	logger.Info("scaled down after stabilization window",
+		"from", current, "to", current-1, "stream_lag", stats.GetStreamLag())
+	return requeueInterval, nil
+}
+
+// scaleTo patches the StatefulSet's replica count in place.
+func (r *ProcessingJobReconciler) scaleTo(ctx context.Context, sts *appsv1.StatefulSet, replicas int32) error {
+	patch := client.MergeFrom(sts.DeepCopy())
+	sts.Spec.Replicas = &replicas
+	if err := r.Patch(ctx, sts, patch); err != nil {
+		return fmt.Errorf("scale %s to %d: %w", sts.Name, replicas, err)
+	}
+	return nil
 }
 
 // coordinatorAddr resolves where to reach the control plane. The convention
@@ -322,6 +404,9 @@ func replicasOf(sts *appsv1.StatefulSet) int32 {
 func (r *ProcessingJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Engine == nil {
 		r.Engine = NewEngineClient()
+	}
+	if r.scaleDown == nil {
+		r.scaleDown = newScaleDownTracker()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dpev1alpha1.ProcessingJob{}).
