@@ -2,15 +2,17 @@
 
 Written for the repository owner, not linked from the README.
 
-Branch: `feat/kubernetes-operator`, plus a second branch at the same commit —
-see deviation 1. `main` is untouched.
+Branch: `feat/kubernetes-operator`. `main` is untouched.
 
-**Neither branch reached GitHub.** The push was refused with
-`403 Resource not accessible by integration`: the environment this ran in had
-read but not write access to the repository. The 17 commits exist only in the
-working clone. See deviation 1 for what to do about it — this is the first
-thing to handle, because nothing else in this document matters if the commits
-are lost.
+**The push blocker is resolved — see §7.** The branch is published at
+`origin/feat/kubernetes-operator` with all 18 operator commits, one author, no
+tool attribution. The duplicate `claude/…` branch has been deleted locally and
+was never pushed. Deviation 1 below is kept as the record of why the original
+session could not publish; it no longer describes anything you need to do.
+
+**Still open, and it is the same blocker as before:** nothing has run on
+Kubernetes. §7 records the second failed attempt. Read §5 — it is unchanged and
+still the highest-value hour you can spend on this repository.
 
 ---
 
@@ -29,7 +31,7 @@ are lost.
   autoscaling formula and why lag rather than CPU, the drain protocol as a
   sequence diagram, six failure modes, the placement boundary, and what is
   deliberately out of scope.
-- Commit history is 15 conventional commits in build order, none carrying any
+- Commit history is 18 conventional commits in build order, none carrying any
   tool or co-author attribution.
 
 ### P1 — real code, not scaffolding
@@ -118,9 +120,10 @@ any comparison meaningless if it differs between the two runs being compared.
    git branch -D <the-other-branch-name>   # only one needs to exist
    ```
 
-   If you are recovering this from a bundle file, `git clone dpe-operator.bundle`
-   or `git fetch dpe-operator.bundle 'refs/heads/*:refs/heads/*'` restores all 17
-   commits with their messages and authorship intact.
+   If you are recovering this from a bundle file, `git clone <bundle>` or
+   `git fetch <bundle> 'refs/heads/*:refs/heads/*'` restores all 18 commits with
+   their messages and authorship intact. (This was done — see §7 — and note the
+   two bundle files differ in authorship.)
 
 2. **CI matrix narrowed to Go 1.24.** The brief asks for `go 1.24` in `go.mod`
    while the existing matrix tested 1.22 and 1.24. With a 1.24 directive, the
@@ -256,3 +259,71 @@ backlog returning mid-drain provably abandons the scale-in. What is untested is
 the integration — that a real worker pod, receiving a real drain broadcast,
 deregisters within the budget. The engine's own drain path is separately
 covered by `TestDrainCommitsInFlightWork`, which does run, against real Redis.
+
+---
+
+## 7. Restore session — what was done, what was skipped and why
+
+Ran on the owner's macOS workstation, from the bundle, after the original
+session failed to push.
+
+### Done
+
+- **Restored from the bundle.** Two bundle files existed in `~/Downloads`, both
+  with a `feat/kubernetes-operator` at 18 commits over `997c5ec` and with
+  byte-identical trees. They differ only in authorship:
+  `dpeoperator.bundle` carries `trung.n@spinsci.com`, `dpeoperator (1).bundle`
+  carries `trungnprofile@gmail.com`. The second was used, because it is the one
+  that already satisfies the one-author requirement without rewriting history.
+  If you find a stale clone or a re-push that shows the `spinsci.com` address on
+  these 18 commits, it came from the other bundle.
+- **Published.** `git push -u origin feat/kubernetes-operator` succeeded from
+  the owner's own credentials. Verified before pushing:
+  `git log --format='%an <%ae>' 997c5ec..HEAD | sort -u` is a single line,
+  `Trung Nguyen <trungnprofile@gmail.com>`, and no commit body or tracked file
+  contains a co-author trailer or any tool attribution.
+- **Re-verified with the Go toolchain:** `go build ./...`, `go vet ./...`,
+  `gofmt -l` all clean; `go vet -tags e2e ./test/e2e/...` clean;
+  `make unit` green under `-race` (controller, placement, stream, worker).
+
+### Skipped, and why
+
+The workstation has **no container runtime**. Docker Desktop has been
+uninstalled: `/Applications/Docker.app` is absent and `/usr/local/bin/docker`
+and `/usr/local/bin/kubectl` are dangling symlinks into it. `kind` and `helm`
+are not installed. So this attempt was blocked by the same thing as the first,
+for a different reason.
+
+| Step | Status |
+| --- | --- |
+| `make test` (Redis via `docker compose`) | **not run** — no Docker |
+| `make kind-up` | **not run** — no Docker, no kind, no helm |
+| `make e2e` | **not run** — needs a cluster from `kind-up` |
+| `bench/operator-latency.sh reclaim` → `reclaim.json` | **not run** — needs a cluster |
+| `bench/operator-latency.sh scaleup` → `scaleup.json` | **not run** — needs a cluster |
+| `WORKERS=8 bench/throughput.sh` → `throughput.json` | **not run** — needs a cluster |
+
+Consequences, all deliberate:
+
+- `bench/results/` still contains only `placement.json`. No result file was
+  fabricated and no partial run was recorded.
+- The README results table gained **no** rows. The placement row keeps its
+  **simulated** marker. The four engine figures were not re-measured and are
+  still attributed to Docker Compose.
+- `.github/workflows/e2e.yml` is **still `workflow_dispatch` only.** Flipping it
+  to `on: push` was explicitly gated on a green `make e2e`, which never ran.
+  Do not flip it until you have seen the suite pass locally.
+- The README Status section was rewritten to say that two attempts have now
+  failed for want of a container runtime, so it does not read as a one-off.
+
+### To finish this, on a machine with Docker
+
+```sh
+brew install kind helm kubernetes-cli     # plus a running Docker or colima
+make kind-up && make e2e
+```
+
+Expect timing calibration in `test/e2e` to break before the controller logic
+does. Once green, record the three benchmarks per `bench/README.md` — noting
+`min-idle` alongside any reclaim number — add only the rows whose files exist,
+and flip the workflow in the same commit that proves the suite green.
