@@ -1,0 +1,318 @@
+{
+  "simulated": true,
+  "fixture": "gpu-inference-fleet",
+  "description": "A 12-node fleet — 8 GPU nodes with 4 GPUs each and 4 CPU-only nodes — running 24 single-GPU inference workers alongside 16 CPU-only stream workers. The question the fixture asks is how many whole GPU nodes survive the placement, because that is what decides whether a later 4-GPU job can schedule at all.",
+  "weights": {
+    "CPU": 1,
+    "Memory": 1,
+    "GPU": 10
+  },
+  "cluster": {
+    "nodes": 12,
+    "totalGpus": 32,
+    "totalCpuMillis": 320000,
+    "totalMemoryBytes": 2473901162496
+  },
+  "workload": {
+    "pods": 40,
+    "gpusRequested": 24,
+    "cpuMillisRequested": 128000,
+    "memoryBytesRequested": 481036337152
+  },
+  "results": [
+    {
+      "strategy": "MostAllocated",
+      "intent": "bin-pack",
+      "podsScheduled": 40,
+      "podsUnschedulable": 0,
+      "nodesUsed": 6,
+      "nodesTotal": 12,
+      "nodesWithAllGpusFree": 2,
+      "largestFreeGpuBlock": 4,
+      "gpuUtilization": 0.75,
+      "cpuUtilization": 0.4,
+      "memoryUtilization": 0.1944,
+      "nodes": [
+        {
+          "name": "cpu-node-0",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-1",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-2",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-3",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "gpu-node-0",
+          "pods": 12,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 32000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 103079215104,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-1",
+          "pods": 12,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 32000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 103079215104,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-2",
+          "pods": 4,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 16000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 68719476736,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-3",
+          "pods": 4,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 16000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 68719476736,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-4",
+          "pods": 4,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 16000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 68719476736,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-5",
+          "pods": 4,
+          "gpusAllocated": 4,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 16000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 68719476736,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 1
+        },
+        {
+          "name": "gpu-node-6",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "gpu-node-7",
+          "pods": 0,
+          "gpusAllocated": 0,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 0,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 0,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0
+        }
+      ]
+    },
+    {
+      "strategy": "LeastAllocated",
+      "intent": "spread",
+      "podsScheduled": 40,
+      "podsUnschedulable": 0,
+      "nodesUsed": 12,
+      "nodesTotal": 12,
+      "nodesWithAllGpusFree": 0,
+      "largestFreeGpuBlock": 1,
+      "gpuUtilization": 0.75,
+      "cpuUtilization": 0.4,
+      "memoryUtilization": 0.1944,
+      "nodes": [
+        {
+          "name": "cpu-node-0",
+          "pods": 4,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 8000,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 17179869184,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-1",
+          "pods": 4,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 8000,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 17179869184,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-2",
+          "pods": 4,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 8000,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 17179869184,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "cpu-node-3",
+          "pods": 4,
+          "gpusAllocated": 0,
+          "gpusCapacity": 0,
+          "cpuMillisAllocated": 8000,
+          "cpuMillisCapacity": 16000,
+          "memoryBytesAllocated": 17179869184,
+          "memoryBytesCapacity": 68719476736,
+          "gpuUtilization": 0
+        },
+        {
+          "name": "gpu-node-0",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-1",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-2",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-3",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-4",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-5",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-6",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        },
+        {
+          "name": "gpu-node-7",
+          "pods": 3,
+          "gpusAllocated": 3,
+          "gpusCapacity": 4,
+          "cpuMillisAllocated": 12000,
+          "cpuMillisCapacity": 32000,
+          "memoryBytesAllocated": 51539607552,
+          "memoryBytesCapacity": 274877906944,
+          "gpuUtilization": 0.75
+        }
+      ]
+    }
+  ]
+}

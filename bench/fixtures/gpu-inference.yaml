@@ -1,0 +1,50 @@
+# Node inventory and pod workload for cmd/placementsim.
+#
+# The shape is the one that makes bin-packing worth configuring: a mixed fleet
+# where GPUs are the scarce, indivisible resource and the workload asks for
+# fewer GPUs than the cluster holds. Under LeastAllocated the scheduler spreads
+# those pods over every GPU node, leaving each one partly consumed; under
+# MostAllocated it fills nodes in turn and leaves whole ones free.
+#
+# Quantities use Kubernetes syntax, so "500m" and "16Gi" parse exactly as they
+# would in a pod spec.
+name: gpu-inference-fleet
+description: >-
+  A 12-node fleet — 8 GPU nodes with 4 GPUs each and 4 CPU-only nodes — running
+  24 single-GPU inference workers alongside 16 CPU-only stream workers. The
+  question the fixture asks is how many whole GPU nodes survive the placement,
+  because that is what decides whether a later 4-GPU job can schedule at all.
+
+# Match deploy/scheduler/binpack-profile.yaml: GPUs dominate the score.
+weights:
+  gpu: 10
+  cpu: 1
+  memory: 1
+
+nodes:
+  - name: gpu-node
+    count: 8
+    cpu: "32"
+    memory: 256Gi
+    gpu: 4
+  - name: cpu-node
+    count: 4
+    cpu: "16"
+    memory: 64Gi
+    gpu: 0
+
+pods:
+  # GPU-bound inference workers: one GPU each, so 24 of them consume 24 of the
+  # cluster's 32 GPUs and 8 could still be free — in one block or in eight.
+  - name: inference-worker
+    count: 24
+    cpu: "4"
+    memory: 16Gi
+    gpu: 1
+  # CPU-only stream workers. They carry no GPU request, which is what exercises
+  # the scorer's "skip resources a node does not have" rule.
+  - name: stream-worker
+    count: 16
+    cpu: "2"
+    memory: 4Gi
+    gpu: 0
