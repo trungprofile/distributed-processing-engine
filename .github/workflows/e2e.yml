@@ -1,0 +1,95 @@
+# End-to-end tests for the operator against a real kind cluster.
+#
+# Deliberately manual (workflow_dispatch) rather than on push: this workflow
+# has never been executed, so enabling it on push would risk a red badge on the
+# README for a suite whose failures would say nothing about the code. Run it
+# once by hand, and move it to `on: push` in the same commit that proves it
+# green. It is kept out of ci.yml so that workflow stays fast.
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      kubernetes_version:
+        description: kind node image tag
+        required: false
+        default: v1.31.0
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Build the engine image
+        run: docker build -t dpe:e2e .
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: dpe
+          config: deploy/kind/cluster.yaml
+          node_image: kindest/node:${{ inputs.kubernetes_version }}
+
+      - name: Load the image into the cluster
+        run: kind load docker-image dpe:e2e --name dpe
+
+      - name: Install the chart
+        run: |
+          helm upgrade --install dpe deploy/helm/dpe \
+            --namespace dpe-system --create-namespace \
+            --set image.repository=dpe \
+            --set image.tag=e2e \
+            --set redis.persistence.enabled=false \
+            --wait --timeout 5m
+
+      # The suite talks to the coordinator's gRPC API and to Redis directly, so
+      # both need a path out of the cluster.
+      - name: Port-forward the coordinator and Redis
+        run: |
+          kubectl port-forward -n dpe-system svc/dpe-coordinator 9090:9090 &
+          kubectl port-forward -n dpe-system svc/dpe-redis 6379:6379 &
+          for _ in $(seq 1 30); do
+            if nc -z localhost 9090 && nc -z localhost 6379; then exit 0; fi
+            sleep 1
+          done
+          echo "port-forwards did not come up" >&2
+          exit 1
+
+      - name: Run the e2e suite
+        env:
+          DPE_E2E_NAMESPACE: dpe-system
+          DPE_E2E_IMAGE: dpe:e2e
+          DPE_E2E_REDIS_ADDR: localhost:6379
+          DPE_E2E_COORDINATOR_ADDR: localhost:9090
+        run: go test -tags e2e ./test/e2e/... -v -timeout 25m -count=1
+
+      - name: Collect cluster state on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-logs
+          kubectl get all,processingjobs -A -o wide > /tmp/e2e-logs/objects.txt 2>&1 || true
+          kubectl describe processingjobs -A > /tmp/e2e-logs/processingjobs.txt 2>&1 || true
+          kubectl logs -n dpe-system -l app.kubernetes.io/component=operator \
+            --tail=-1 > /tmp/e2e-logs/operator.log 2>&1 || true
+          kubectl logs -n dpe-system -l app.kubernetes.io/component=coordinator \
+            --tail=-1 > /tmp/e2e-logs/coordinator.log 2>&1 || true
+          kubectl logs -n dpe-system -l app.kubernetes.io/name=dpe-worker \
+            --tail=-1 --prefix > /tmp/e2e-logs/workers.log 2>&1 || true
+          kubectl get events -A --sort-by=.lastTimestamp > /tmp/e2e-logs/events.txt 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-logs
+          path: /tmp/e2e-logs
+          retention-days: 7

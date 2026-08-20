@@ -1,0 +1,14 @@
+# A four-node kind cluster: one control plane and three workers.
+#
+# Three workers rather than one because the operator emits topology spread
+# constraints over kubernetes.io/hostname, and a single-node cluster cannot
+# tell a spread policy from a bin-pack one. The e2e suite's pod-eviction test
+# also wants somewhere for the replacement pod to land.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: dpe
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

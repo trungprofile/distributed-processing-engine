@@ -3,6 +3,25 @@ bin/
 /worker
 /producer
 /coordinator
+/operator
+
+# Helm packaging output. The chart source under deploy/helm is tracked; the
+# packaged tarballs and fetched dependencies are not.
+*.tgz
+deploy/helm/dpe/charts/
+deploy/helm/dpe/Chart.lock
+
+# kind and kubectl scratch
+kubeconfig
+kubeconfig-*
+.kube/
+
+# Benchmark scratch. bench/results/*.json is committed on purpose — every
+# number in the README must be traceable to a file there — so only temporary
+# run output is ignored.
+bench/results/tmp/
+bench/results/*.log
+bench/results/*.raw
 
 # Test and coverage artifacts
 *.out
