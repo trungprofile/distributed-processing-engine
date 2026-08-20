@@ -2,8 +2,15 @@
 
 Written for the repository owner, not linked from the README.
 
-Branch: `feat/kubernetes-operator`. A second branch pointing at the same commits
-was also pushed — see deviation 1. `main` is untouched.
+Branch: `feat/kubernetes-operator`, plus a second branch at the same commit —
+see deviation 1. `main` is untouched.
+
+**Neither branch reached GitHub.** The push was refused with
+`403 Resource not accessible by integration`: the environment this ran in had
+read but not write access to the repository. The 17 commits exist only in the
+working clone. See deviation 1 for what to do about it — this is the first
+thing to handle, because nothing else in this document matters if the commits
+are lost.
 
 ---
 
@@ -91,12 +98,29 @@ any comparison meaningless if it differs between the two runs being compared.
 
 ## 3. Deviations from the brief
 
-1. **Branch name.** The brief specifies `feat/kubernetes-operator`. The
-   environment this ran in mandated a different, pre-assigned branch name and
-   forbade pushing elsewhere. Both were pushed, pointing at the same commits;
-   `git branch -r` shows them. `main` was not touched, nothing was
-   force-pushed, and no existing history was rewritten. Delete whichever branch
-   you do not want.
+1. **Nothing was pushed, and there are two branch names.** The brief specifies
+   `feat/kubernetes-operator`; the environment this ran in mandated a
+   different, pre-assigned branch name and forbade pushing elsewhere. Both
+   branches were created locally at the same commit so either can be published.
+
+   Neither could be pushed: `git push` returns
+   `403 Resource not accessible by integration`, as does the GitHub API with
+   the environment's injected credentials. Read access worked throughout — the
+   clone and `git ls-remote` both succeed — so this is a write-scope
+   restriction on the session, not a repository or network problem. Nothing was
+   force-pushed, `main` was not touched, and no existing history was rewritten.
+
+   To publish, from a checkout that has push rights:
+
+   ```sh
+   git fetch <path-or-bundle> feat/kubernetes-operator:feat/kubernetes-operator
+   git push -u origin feat/kubernetes-operator
+   git branch -D <the-other-branch-name>   # only one needs to exist
+   ```
+
+   If you are recovering this from a bundle file, `git clone dpe-operator.bundle`
+   or `git fetch dpe-operator.bundle 'refs/heads/*:refs/heads/*'` restores all 17
+   commits with their messages and authorship intact.
 
 2. **CI matrix narrowed to Go 1.24.** The brief asks for `go 1.24` in `go.mod`
    while the existing matrix tested 1.22 and 1.24. With a 1.24 directive, the
