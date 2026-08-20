@@ -145,7 +145,21 @@ func desiredStatefulSet(job *dpev1alpha1.ProcessingJob, spec dpev1alpha1.Process
 			// because restarting it strands its in-flight records for a full
 			// lease.
 			LivenessProbe: httpProbe(15, 10, 6),
+			// Passed through verbatim. An extended resource such as
+			// nvidia.com/gpu is meaningless to the operator — it is the
+			// scheduler and the node's device plugin that act on it — so the
+			// operator's only job is to make sure it reaches the pod spec
+			// unmodified rather than trying to interpret it.
+			Resources: *spec.Resources.DeepCopy(),
 		}},
+	}
+	// Bin-packing is a property of the scheduler profile, not of the pod. The
+	// operator's part is routing the pod to a scheduler configured that way.
+	if spec.Placement.SchedulerName != "" {
+		pod.SchedulerName = spec.Placement.SchedulerName
+	}
+	if spec.Placement.Policy == dpev1alpha1.PlacementSpread {
+		pod.TopologySpreadConstraints = spreadConstraints(job)
 	}
 
 	return &appsv1.StatefulSet{
@@ -177,6 +191,31 @@ func desiredStatefulSet(job *dpev1alpha1.ProcessingJob, spec dpev1alpha1.Process
 				},
 				Spec: pod,
 			},
+		},
+	}
+}
+
+// spreadConstraints keep one job's workers off the same node, and off the same
+// zone, where possible.
+//
+// ScheduleAnyway rather than DoNotSchedule: a group that cannot spread should
+// still run. An unschedulable worker costs throughput immediately, while an
+// unevenly spread one costs only a larger reclaim sweep if that node is lost —
+// and the reclaim path is the part of this engine that is already proven.
+func spreadConstraints(job *dpev1alpha1.ProcessingJob) []corev1.TopologySpreadConstraint {
+	selector := &metav1.LabelSelector{MatchLabels: selectorLabels(job)}
+	return []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       corev1.LabelHostname,
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     selector,
+		},
+		{
+			MaxSkew:           1,
+			TopologyKey:       corev1.LabelTopologyZone,
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     selector,
 		},
 	}
 }
