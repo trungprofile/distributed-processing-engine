@@ -34,6 +34,12 @@ import (
 // hundred jobs do not flood one coordinator with stats calls.
 const requeueInterval = 5 * time.Second
 
+// drainPollInterval is how often the operator re-checks a drain it requested.
+// A drain finishes in well under a second on an idle worker, so polling faster
+// than the steady-state interval turns a scale-in from "eventually" into
+// "promptly" without adding meaningful load.
+const drainPollInterval = time.Second
+
 // ProcessingJobReconciler reconciles a ProcessingJob into a StatefulSet of
 // workers plus the headless Service that governs it.
 type ProcessingJobReconciler struct {
@@ -47,6 +53,10 @@ type ProcessingJobReconciler struct {
 	// scaleDown damps scale-in so a backlog oscillating around the threshold
 	// does not drain a worker on every reconcile.
 	scaleDown *scaleDownTracker
+
+	// drains tracks the worker each job is currently draining ahead of a
+	// scale-in, so a reconcile can tell "waiting" from "not started".
+	drains *drainTracker
 }
 
 // +kubebuilder:rbac:groups=dpe.trungprofile.dev,resources=processingjobs,verbs=get;list;watch;create;update;patch;delete
@@ -74,6 +84,7 @@ func (r *ProcessingJobReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// to the job, so garbage collection has already removed them; only
 			// the in-memory scale-down timer is ours to clean up.
 			r.scaleDown.forget(req.NamespacedName)
+			r.drains.clear(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -129,43 +140,117 @@ func (r *ProcessingJobReconciler) converge(
 ) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 
+	now := time.Now()
+	key := client.ObjectKeyFromObject(job)
 	current := replicasOf(sts)
 	desired := desiredReplicas(spec, stats.GetStreamLag())
+
+	// A drain already in flight takes precedence over the current backlog
+	// reading: the worker has been told to stop, and the only question left is
+	// whether it has finished.
+	if attempt, ok := r.drains.current(key); ok {
+		if desired >= current {
+			// Backlog came back while the victim was draining. Let it go: the
+			// StatefulSet restarts the drained pod under the same name, and it
+			// rejoins the group as the same consumer.
+			logger.Info("backlog recovered mid-drain, abandoning scale-in", "node", attempt.node)
+			r.drains.clear(key)
+			r.scaleDown.forget(key)
+			return r.scaleUpTo(ctx, sts, current, desired, stats)
+		}
+		return r.finishDrain(ctx, job, spec, sts, stats, key, attempt, now)
+	}
+
 	if desired == current {
 		return requeueInterval, nil
 	}
-
 	if desired > current {
-		if err := r.scaleTo(ctx, sts, desired); err != nil {
-			return 0, err
-		}
-		logger.Info("scaled up on backlog",
-			"from", current, "to", desired, "stream_lag", stats.GetStreamLag())
-		return requeueInterval, nil
+		return r.scaleUpTo(ctx, sts, current, desired, stats)
 	}
 
-	key := client.ObjectKeyFromObject(job)
 	window := spec.Autoscale.StabilizationWindow.Duration
-	allowed, readyAt := r.scaleDown.allow(key, current, desired, window, time.Now())
+	allowed, readyAt := r.scaleDown.allow(key, current, desired, window, now)
 	if !allowed {
 		// Come back exactly when the window closes rather than polling: the
 		// backlog may well rise again before then and reset the timer.
-		wait := time.Until(readyAt)
-		if wait > requeueInterval {
+		if wait := readyAt.Sub(now); wait > requeueInterval {
 			return wait, nil
 		}
 		return requeueInterval, nil
 	}
 
-	// Scale in one replica at a time. Each step drains a worker, and doing
-	// several at once would take a large slice of the group's capacity out of
-	// service simultaneously.
-	if err := r.scaleTo(ctx, sts, current-1); err != nil {
+	// Scale in one replica at a time, and drain that replica before removing
+	// it. Doing several at once would take a large slice of the group's
+	// capacity out of service simultaneously.
+	victim := victimNode(job, current)
+	if err := r.beginDrain(ctx, coordinatorAddr(job, spec), victim); err != nil {
+		// The drain request failed to reach the coordinator. Do not scale in
+		// blind — leave the replica running and try again next reconcile.
+		logger.Info("drain request failed, holding replica count", "node", victim, "error", err)
+		return requeueInterval, nil
+	}
+	r.drains.start(key, victim, now)
+	return drainPollInterval, nil
+}
+
+// scaleUpTo raises the replica count immediately. Backlog is already costing
+// latency and an extra consumer costs nothing but a pod, so there is no
+// stabilization window on the way up.
+func (r *ProcessingJobReconciler) scaleUpTo(
+	ctx context.Context,
+	sts *appsv1.StatefulSet,
+	current, desired int32,
+	stats *enginepb.ClusterStats,
+) (time.Duration, error) {
+	if desired <= current {
+		return requeueInterval, nil
+	}
+	if err := r.scaleTo(ctx, sts, desired); err != nil {
 		return 0, err
 	}
-	logger.Info("scaled down after stabilization window",
-		"from", current, "to", current-1, "stream_lag", stats.GetStreamLag())
+	log.FromContext(ctx).Info("scaled up on backlog",
+		"from", current, "to", desired, "stream_lag", stats.GetStreamLag())
 	return requeueInterval, nil
+}
+
+// finishDrain decides what to do about a drain the operator already requested.
+func (r *ProcessingJobReconciler) finishDrain(
+	ctx context.Context,
+	job *dpev1alpha1.ProcessingJob,
+	spec dpev1alpha1.ProcessingJobSpec,
+	sts *appsv1.StatefulSet,
+	stats *enginepb.ClusterStats,
+	key client.ObjectKey,
+	attempt drainAttempt,
+	now time.Time,
+) (time.Duration, error) {
+	logger := log.FromContext(ctx)
+	current := replicasOf(sts)
+
+	switch waitForDrain(stats, attempt.node, attempt.startedAt, spec.DrainTimeout.Duration, now) {
+	case drainPending:
+		return drainPollInterval, nil
+
+	case drainExpired:
+		// The worker did not finish inside its own budget. Do not force the
+		// pod away: whatever it still holds is checked out of the stream, and
+		// deleting it now would strand those records for a full lease. Give up
+		// on this scale-in and let the next reconcile decide afresh.
+		logger.Info("drain exceeded its budget, leaving replica count unchanged",
+			"node", attempt.node, "budget", spec.DrainTimeout.Duration.String())
+		r.drains.clear(key)
+		return requeueInterval, nil
+
+	default: // drainGone
+		if err := r.scaleTo(ctx, sts, current-1); err != nil {
+			return 0, err
+		}
+		r.drains.clear(key)
+		logger.Info("scaled down after a clean drain",
+			"node", attempt.node, "from", current, "to", current-1,
+			"drain_duration", now.Sub(attempt.startedAt).Round(time.Millisecond).String())
+		return requeueInterval, nil
+	}
 }
 
 // scaleTo patches the StatefulSet's replica count in place.
@@ -407,6 +492,9 @@ func (r *ProcessingJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if r.scaleDown == nil {
 		r.scaleDown = newScaleDownTracker()
+	}
+	if r.drains == nil {
+		r.drains = newDrainTracker()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dpev1alpha1.ProcessingJob{}).
